@@ -416,6 +416,18 @@ export const Taskbar = class extends EventEmitter {
         },
       ],
       [
+        SETTINGS,
+        [
+          'changed::show-window-thumbnail-as-icon',
+          'changed::window-thumbnail-refresh-interval',
+        ],
+        () => {
+          this._getAppIcons()
+            .filter((icon) => icon.constructor === AppIcons.TaskbarAppIcon)
+            .forEach((icon) => icon.updateWindowThumbnail())
+        },
+      ],
+      [
         adjustment,
         ['notify::upper', 'notify::pageSize'],
         () => this._onScrollSizeChange(adjustment),

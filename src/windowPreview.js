@@ -979,7 +979,7 @@ export const Preview = GObject.registerClass(
       if (this.window != window) {
         let _assignWindowClone = () => {
           if (window.get_compositor_private()) {
-            let cloneBin = this._getWindowCloneBin(window)
+            let cloneBin = createWindowCloneBin(window)
 
             this._resizeClone(cloneBin, window)
             this._addClone(cloneBin, animateSize)
@@ -1304,24 +1304,6 @@ export const Preview = GObject.registerClass(
       Utils.animate(newCloneBin, newCloneOpts)
     }
 
-    _getWindowCloneBin(window) {
-      let frameRect = window.get_frame_rect()
-      let bufferRect = window.get_buffer_rect()
-      let clone = new Clutter.Clone({ source: window.get_compositor_private() })
-      let cloneBin = new St.Widget({
-        opacity: 0,
-        layout_manager:
-          frameRect.width != bufferRect.width ||
-          frameRect.height != bufferRect.height
-            ? new WindowCloneLayout(frameRect, bufferRect)
-            : new Clutter.BinLayout(),
-      })
-
-      cloneBin.add_child(clone)
-
-      return cloneBin
-    }
-
     _getBinSize() {
       let [fixedWidth, fixedHeight] = this._previewDimensions
 
@@ -1391,6 +1373,8 @@ export const WindowCloneLayout = GObject.registerClass(
       //the buffer_rect contains the transparent padding that must be removed
       this.frameRect = frameRect
       this.bufferRect = bufferRect
+      this.ratio = 1
+      this.padding = [0, 0]
     }
 
     vfunc_allocate(actor, box) {
@@ -1415,6 +1399,65 @@ export function setStyle(actor, style) {
   if (!isManualStyling) {
     actor.set_style(style)
   }
+}
+
+/**
+ * Creates a container holding a Clutter.Clone of the compositor texture of the
+ * given window. Windows with an invisible buffer border (client side
+ * decorations, shadows) get a WindowCloneLayout so that this border is kept out
+ * of the way. The clone is created with a 0 opacity so that callers can fade it
+ * in when it is ready.
+ *
+ * @param {Meta.Window} window the window to clone
+ * @returns {St.Widget} the container of the clone
+ */
+export function createWindowCloneBin(window) {
+  let frameRect = window.get_frame_rect()
+  let bufferRect = window.get_buffer_rect()
+  let clone = new Clutter.Clone({ source: window.get_compositor_private() })
+  let cloneBin = new St.Widget({
+    opacity: 0,
+    layout_manager:
+      frameRect.width != bufferRect.width ||
+      frameRect.height != bufferRect.height
+        ? new WindowCloneLayout(frameRect, bufferRect)
+        : new Clutter.BinLayout(),
+  })
+
+  cloneBin.add_child(clone)
+
+  return cloneBin
+}
+
+/**
+ * Scales the cloned window so that it fits in a box of the given size while
+ * preserving its aspect ratio. The clone is centered in the box by the layout
+ * manager of its parent.
+ *
+ * @returns {number[]} the resulting clone size, or null if it cannot be
+ *   computed yet (empty box)
+ */
+export function fitWindowCloneInBox(cloneBin, window, boxWidth, boxHeight) {
+  if (!cloneBin || boxWidth <= 0 || boxHeight <= 0) return null
+
+  let frameRect = cloneBin.layout_manager.frameRect || window.get_frame_rect()
+  let ratio = Math.min(
+    boxWidth / frameRect.width,
+    boxHeight / frameRect.height,
+    1,
+  )
+  let cloneWidth = frameRect.width * ratio
+  let cloneHeight = frameRect.height * ratio
+
+  cloneBin.set_size(cloneWidth, cloneHeight)
+  cloneBin.get_first_child().set_size(cloneWidth, cloneHeight)
+
+  if (cloneBin.layout_manager instanceof WindowCloneLayout) {
+    cloneBin.layout_manager.ratio = ratio
+    cloneBin.layout_manager.padding = [0, 0]
+  }
+
+  return [cloneWidth, cloneHeight]
 }
 
 export function getTweenOpts(opts) {

@@ -44,6 +44,7 @@ import { EventEmitter } from 'resource:///org/gnome/shell/misc/signals.js'
 import { Hold } from './intellihide.js'
 import * as Utils from './utils.js'
 import * as Taskbar from './taskbar.js'
+import { createWindowCloneBin, fitWindowCloneInBox } from './windowPreview.js'
 import {
   DTP_EXTENSION,
   SETTINGS,
@@ -63,6 +64,7 @@ const T3 = 'showDotsTimeout'
 const T4 = 'overviewWindowDragEndTimeout'
 const T5 = 'switchWorkspaceTimeout'
 const T6 = 'displayProperIndicatorTimeout'
+const T7 = 'windowThumbnailRefreshTimeout'
 
 //right padding defined for .overview-label in stylesheet.css
 const TITLE_RIGHT_PADDING = 8
@@ -100,6 +102,150 @@ let recentlyClickedApp = null
 let recentlyClickedAppWindows = null
 let recentlyClickedAppIndex = 0
 let recentlyClickedAppMonitorIndex
+
+/**
+ * Live thumbnail of a window, meant to be used in place of the icon of a
+ * running application.
+ *
+ * It is a Clutter.Clone of the window compositor texture, which is by nature
+ * kept up to date by the compositor, so the clone itself only needs to be
+ * refreshed when the window changes in a way that affects how it is displayed
+ * (its size, its position, the actor it is painted by...). Those refreshes are
+ * throttled, as cloning the content of a window on every frame of every panel
+ * icon would be expensive.
+ *
+ * The thumbnail hides itself whenever the window has no content to show (no
+ * compositor actor yet, minimized window, window on an inactive workspace) so
+ * that callers can fall back to the static application icon.
+ */
+export const WindowThumbnail = GObject.registerClass(
+  {},
+  class WindowThumbnail extends St.Widget {
+    _init() {
+      super._init({
+        style_class: 'dtp-window-thumbnail',
+        layout_manager: new Clutter.BinLayout(),
+        clip_to_allocation: true,
+        reactive: false,
+        visible: false,
+      })
+
+      this.window = null
+      this._cloneBin = null
+      this._windowSignalsHandler = new Utils.GlobalSignalsHandler()
+      this._timeoutsHandler = new Utils.TimeoutsHandler()
+
+      // the size available to the clone depends on the size of the icon
+      this.connect('notify::width', () => this._scheduleRefresh())
+      this.connect('notify::height', () => this._scheduleRefresh())
+      this.connect('destroy', () => this._onDestroy())
+    }
+
+    /**
+     * Sets the window to preview, or null to remove the preview.
+     *
+     * @param {Meta.Window|null} window
+     */
+    setWindow(window) {
+      window = window || null
+
+      if (this.window === window) {
+        this._refresh()
+        return
+      }
+
+      this._windowSignalsHandler.destroy()
+      this._destroyClone()
+      this.window = window
+
+      if (!this.window) {
+        this.hide()
+        return
+      }
+
+      this._windowSignalsHandler.add(
+        [
+          this.window,
+          [
+            'notify::mapped',
+            'notify::minimized',
+            'size-changed',
+            'position-changed',
+            'workspace-changed',
+          ],
+          () => this._scheduleRefresh(),
+        ],
+        [this.window, 'unmanaged', () => this.setWindow(null)],
+      )
+
+      this._refresh()
+    }
+
+    // Refresh at most once per interval, whatever the number of changes of the
+    // window in the meantime.
+    _scheduleRefresh() {
+      if (!this.window || this._timeoutsHandler.getId(T7)) return
+
+      this._timeoutsHandler.add([
+        T7,
+        SETTINGS.get_int('window-thumbnail-refresh-interval'),
+        () => this._refresh(),
+      ])
+    }
+
+    _refresh() {
+      let windowActor = this.window
+        ? this.window.get_compositor_private()
+        : null
+
+      if (!windowActor || !windowActor.visible) {
+        this.hide()
+        return
+      }
+
+      if (!this._cloneBin) {
+        this._cloneBin = createWindowCloneBin(this.window)
+
+        if (!this._cloneBin) return
+
+        this.add_child(this._cloneBin)
+      }
+
+      let clone = this._cloneBin.get_first_child()
+
+      if (clone.source !== windowActor) clone.source = windowActor
+
+      if (
+        !fitWindowCloneInBox(
+          this._cloneBin,
+          this.window,
+          this.width,
+          this.height,
+        )
+      ) {
+        this.hide()
+        return
+      }
+
+      this._cloneBin.opacity = 255
+      this.show()
+    }
+
+    _destroyClone() {
+      if (this._cloneBin) {
+        this._cloneBin.destroy()
+        this._cloneBin = null
+      }
+    }
+
+    _onDestroy() {
+      this._timeoutsHandler.destroy()
+      this._windowSignalsHandler.destroy()
+      this._cloneBin = null
+      this.window = null
+    }
+  },
+)
 
 /**
  * Extend AppIcon
@@ -220,6 +366,7 @@ export const TaskbarAppIcon = GObject.registerClass(
       this._setAppIconStyle()
       this._showDots()
       this._numberOverlay()
+      this._updateWindowThumbnail()
 
       this._signalsHandler.add(
         [
@@ -455,6 +602,8 @@ export const TaskbarAppIcon = GObject.registerClass(
 
       this._timeoutsHandler.destroy()
       this._signalsHandler.destroy()
+
+      this._windowThumbnail = null
 
       this._previewMenu.close(true)
     }
@@ -919,6 +1068,7 @@ export const TaskbarAppIcon = GObject.registerClass(
 
     _onFocusAppChanged() {
       this._displayProperIndicator()
+      this._updateWindowThumbnail()
     }
 
     _onOverviewWindowDragEnd() {
@@ -1337,6 +1487,63 @@ export const TaskbarAppIcon = GObject.registerClass(
       }
 
       this._previewMenu.update(this, windows)
+      this._updateWindowThumbnail()
+    }
+
+    updateWindowThumbnail() {
+      this._updateWindowThumbnail()
+    }
+
+    /**
+     * The window whose live content should be shown in place of the icon: the
+     * focused window of the application if it has one, otherwise its topmost
+     * window. Windows that cannot be cloned at the moment (no
+     * compositor actor, minimized window, window on an inactive workspace) are
+     * ignored, which leaves the static icon in place.
+     */
+    _getThumbnailWindow() {
+      let windows = (
+        this.window ? [this.window] : this.getAppIconInterestingWindows()
+      ).filter((w) => {
+        let windowActor = w.get_compositor_private()
+
+        return windowActor && windowActor.visible
+      })
+
+      if (!windows.length) return null
+
+      let focusedWindow = global.display.focus_window
+
+      if (windows.includes(focusedWindow)) return focusedWindow
+
+      let stackedWindows = global.display.sort_windows_by_stacking(windows)
+
+      return stackedWindows[stackedWindows.length - 1]
+    }
+
+    _updateWindowThumbnail() {
+      if (!SETTINGS.get_boolean('show-window-thumbnail-as-icon')) {
+        if (this._windowThumbnail) this._windowThumbnail.setWindow(null)
+
+        return
+      }
+
+      if (!this._windowThumbnail) {
+        this._windowThumbnail = new WindowThumbnail()
+        this._windowThumbnail.connect('notify::visible', () =>
+          this._updateWindowThumbnailVisibility(),
+        )
+
+        this._iconContainer.add_child(this._windowThumbnail)
+      }
+
+      this._windowThumbnail.setWindow(this._getThumbnailWindow())
+    }
+
+    // The icon is only hidden, and not removed, so that it keeps sizing the
+    // icon container while the thumbnail is displayed.
+    _updateWindowThumbnailVisibility() {
+      this.icon.opacity = this._windowThumbnail.visible ? 0 : 255
     }
 
     _getRunningIndicatorCount() {

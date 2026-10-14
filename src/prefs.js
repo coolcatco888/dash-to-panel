@@ -2062,6 +2062,13 @@ const Preferences = class {
     )
 
     this._settings.bind(
+      'show-window-thumbnail-as-icon',
+      this._builder.get_object('show_window_thumbnail_as_icon_switch'),
+      'active',
+      Gio.SettingsBindFlags.DEFAULT,
+    )
+
+    this._settings.bind(
       'show-favorites',
       this._builder.get_object('show_favorite_switch'),
       'active',

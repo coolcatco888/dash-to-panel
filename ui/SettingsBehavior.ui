@@ -113,6 +113,17 @@
             </child>
           </object>
         </child>
+        <child>
+          <object class="AdwActionRow" id="show_window_thumbnail_as_icon_row">
+            <property name="title" translatable="yes">Show live window thumbnail instead of app icon</property>
+            <property name="subtitle" translatable="yes">Replace the panel icon of a running application with a live thumbnail of its focused or most recently used window</property>
+            <child>
+              <object class="GtkSwitch" id="show_window_thumbnail_as_icon_switch">
+                <property name="valign">center</property>
+              </object>
+            </child>
+          </object>
+        </child>
       </object>
     </child>
     <child>

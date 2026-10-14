@@ -520,6 +520,17 @@
       <summary>Show tooltip</summary>
       <description>Show tooltip on hover of app icon</description>
     </key>
+    <key type="b" name="show-window-thumbnail-as-icon">
+      <default>false</default>
+      <summary>Show window thumbnail instead of app icon</summary>
+      <description>Show a live thumbnail of the focused or most recently used window of the application instead of its icon</description>
+    </key>
+    <key type="i" name="window-thumbnail-refresh-interval">
+      <default>300</default>
+      <range min="100" max="2000"/>
+      <summary>Window thumbnail refresh interval</summary>
+      <description>Amount of time in milliseconds between live window thumbnail refreshes</description>
+    </key>
     <key type="b" name="show-running-apps">
       <default>true</default>
       <summary>Show running apps</summary>
